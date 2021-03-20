@@ -6,25 +6,24 @@ from Crypto.Cipher import AES
 def HexToBase64(hexstring):
     return b64encode(bytes.fromhex(hexstring))
 
-def FixedXOR(hexstring, key):
-    val = int(hexstring, 16)
-    key = int(key, 16)
-    return hex(val ^ key)[2:]
+def FixedXOR(bytes_in, key):
+    return MultiByteXOR(bytes_in, key)
 
 def SingleByteXOR(bytes_in, key):
-    if (isinstance(bytes_in, str)):
-        bytes_in = bytes.fromhex(bytes_in)
-    res = []
+    res = b''
     for byte in bytes_in:
-        res.append(byte ^ key)
-    res = ''.join([chr(x) for x in res])
+        res += bytes([byte ^ key])
     return res
 
 def CheckValidString(s, precision):
-    return all([(ch in string.printable) for ch in s]) and [(ch in string.punctuation) for ch in s].count(True) < (len(s) / precision)
+    try:
+        s.decode("utf-8")
+    except:
+        return False
+    return all([ch in set(bytes(string.printable, "ascii")) for ch in s]) and [ch in set(bytes(string.punctuation, "ascii")) for ch in s].count(True) < (len(s) / precision)
 
 def CrackSingleByteXOR(bytes_in):
-    ret = ""
+    ret = b''
     for i in range(1, 0x100):
         ret = SingleByteXOR(bytes_in, i)
         if(CheckValidString(ret, 8)):
@@ -33,13 +32,9 @@ def CrackSingleByteXOR(bytes_in):
     return 0
 
 def MultiByteXOR(bytes_in, key):
-    if (isinstance(bytes_in, str)):
-        bytes_in = bytes(bytes_in, "utf-8")
-    key_dec = [ord(x) for x in key]
-    res = []
+    res = b''
     for i, byte in enumerate(bytes_in):
-        res.append(byte ^ key_dec[i % len(key)])
-    res = ''.join([hex(x)[2:].rjust(2, "0") for x in res])
+        res += bytes([byte ^ key[i % len(key)]])
     return res
 
 def HammingDist(str1, str2):
@@ -88,40 +83,92 @@ def HasRepeatedBlocks(bytes_in):
     blocks = [bytes_in[(i+0)*16: (i+1)*16] for i in range(num_blocks)]
     return (len(set(blocks)) != num_blocks)
 
+def PKCS7(blocks, block_size):
+    index = len(blocks) // block_size
+    last_block = blocks[index * block_size:]
+    padding = block_size - len(last_block)
+    return blocks[:index * block_size] + last_block + (bytes([padding]) * padding)
+
+def AES_ECB(mode, data, key):
+    cipher = AES.new(key, AES.MODE_ECB)
+
+    if(mode == "encrypt"):
+        return cipher.encrypt(data)
+
+    elif(mode == "decrypt"):
+        return cipher.decrypt(data)
+
+    else:
+        exit("Invalid AES ECB mode!")
+
+def AES_CBC(mode, data, key, iv):
+    previous_block = b''
+    block_size = len(key)
+
+    if(mode == "encrypt"):
+        cipher_blocks = b''
+        for i in range(0, len(data), block_size):
+            if(iv):
+                middle = MultiByteXOR(data[i: i + block_size], iv)
+                iv = 0
+            else:
+                middle = MultiByteXOR(data[i: i + block_size], previous_block)
+            previous_block = AES_ECB("encrypt", middle, key)
+            cipher_blocks += previous_block
+        return cipher_blocks
+
+    elif(mode == "decrypt"):
+        plaintext_blocks = b''
+        previous_block = b''
+        for i in range(0, len(data), block_size):
+            cipher_block = data[i: i + block_size]
+            middle = AES_ECB("decrypt", cipher_block, key)
+            if(iv):
+                plaintext_blocks += MultiByteXOR(middle, iv)
+                previous_block = cipher_block
+                iv = 0
+            else:
+                plaintext_blocks += MultiByteXOR(middle, previous_block)
+                previous_block = cipher_block
+        return plaintext_blocks
+
+    else:
+        exit("Invalid AES CBC mode!")
+
 def Tests():
     val = "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d"
     res = b"SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t"
     assert(HexToBase64(val) == res)
 
-    val = "1c0111001f010100061a024b53535009181c"
-    key = "686974207468652062756c6c277320657965"
-    res = "746865206b696420646f6e277420706c6179"
+    val = bytes.fromhex("1c0111001f010100061a024b53535009181c")
+    key = bytes.fromhex("686974207468652062756c6c277320657965")
+    res = bytes.fromhex("746865206b696420646f6e277420706c6179")
     assert(FixedXOR(val, key) == res)
 
-    val = "1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736"
+    val = bytes.fromhex("1b37373331363f78151b7f2b783431333d78397828372d363c78373e783a393b3736")
     key = 0x58
-    res = "Cooking MC's like a pound of bacon"
+    res = b"Cooking MC's like a pound of bacon"
     #print(CrackSingleByteXOR(val))
     assert(SingleByteXOR(val, key) == res)
 
     try:
-        val = "7b5a4215415d544115415d5015455447414c155c46155f4058455c5b523f"
-        key = 0x35
-        res = "Now that the party is jumping\n"
+        val = bytes.fromhex("7b5a4215415d544115415d5015455447414c155c46155f4058455c5b523f")
+        key = 0x00
+        res = b"Now that the party is jumping\n"
         with open("4.txt", 'r') as f:
             line = "dummy_val"
-            while(line != ""):
-                line = f.readline()
+            while(line != b""):
+                line = bytes.fromhex(f.readline().strip())
                 returned = CrackSingleByteXOR(line)
                 if(returned):
-                    print(returned)
+                    key = returned['key']
         assert(SingleByteXOR(val, key) == res)
     except FileNotFoundError:
         print("File 4.txt not found!")
 
-    val = "Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal"
-    res = "0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f"
-    key = "ICE"
+    val = b"Burning 'em, if you ain't quick and nimble\nI go crazy when I hear a cymbal"
+    res = bytes.fromhex("0b3637272a2b2e63622c2e69692a23693a2a3c6324202d623d63343c2a26226324272765272a282b2f20430a652e2c652a3124333a653e2b2027630c692b20283165286326302e27282f")
+    key = b"ICE"
     assert(MultiByteXOR(val, key) == res)
 
     str1 = b"this is a test"
@@ -140,8 +187,7 @@ def Tests():
         with open("7.txt", 'r') as f:
             data_enc = b64decode(f.read().strip())
         key = b"YELLOW SUBMARINE"
-        cipher = AES.new(key, AES.MODE_ECB)
-        plaintext = cipher.decrypt(data_enc).decode("utf-8")
+        plaintext = AES_ECB("decrypt", data_enc, key).decode("utf-8")
         assert(plaintext.startswith("I'm back and I'm ringin' the bell"))
         #print(plaintext)
     except FileNotFoundError:
@@ -156,6 +202,20 @@ def Tests():
         assert(res.hex().startswith("d8806197"))
     except FileNotFoundError:
         print("File 8.txt not found!")
+
+    block = b"YELLOW SUBMARINE"
+    block_size = 20
+    assert(PKCS7(block, block_size) == b"YELLOW SUBMARINE\x04\x04\x04\x04")
+
+    try:
+        with open("10.txt", 'r') as f:
+            data_enc = b64decode(f.read().strip())
+        key = b"YELLOW SUBMARINE"
+        iv = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+        decrypted = AES_CBC("decrypt", data_enc, key, iv)
+        assert(decrypted.startswith(b"I'm back and I'm ringin' the bell"))
+    except FileNotFoundError:
+        print("File 10.txt not found!")
 
 if(__name__ == "__main__"):
     Tests()
